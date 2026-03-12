@@ -1,0 +1,7 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: com.back.global.jpa.config.CustomDevPostgreSQLDialect

@@ -1,0 +1,40 @@
+name: slog-dev
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    environment:
+      TZ: Asia/Seoul
+    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru --requirepass lldj123414
+  db:
+    image: jangka512/pgj:latest
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lldj123414
+      POSTGRES_DATABASE: postgres
+      POSTGRES_DATABASES: slog_dev,slog_test
+      TZ: Asia/Seoul
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements,auto_explain
+      -c auto_explain.log_min_duration=1000
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c wal_level=minimal
+      -c max_wal_senders=0
+      -c random_page_cost=1.1
+      -c jit=off
+      -c log_min_duration_statement=1000
+      -c log_statement=all
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=6
+      -c idle_in_transaction_session_timeout=60000
+    volumes:
+      - db_data:/var/lib/postgresql
+volumes:
+  db_data:
