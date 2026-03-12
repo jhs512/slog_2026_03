@@ -21,7 +21,7 @@ class HomeController {
             |<p>Host Name: ${localHost.hostName}</p>
             |<p>Host Address: ${localHost.hostAddress}</p>
             |<div>
-            |    <a href="/swagger-ui/index.html">API 문서</a>
+            |    <a href="/swagger-ui/index.html">API 문서 링크</a>
             |</div>
         """.trimMargin()
     }
