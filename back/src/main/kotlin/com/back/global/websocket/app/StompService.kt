@@ -22,17 +22,13 @@ class StompService(
             mapOf("destination" to destination, "payload" to payload)
         )
 
-        try {
-            redisTemplate.convertAndSend(CHANNEL, json)
-        } catch (_: Exception) {
-            messagingTemplate.convertAndSend(destination, payload)
-        }
+        redisTemplate.convertAndSend(CHANNEL, json)
     }
 
     override fun onMessage(message: Message, pattern: ByteArray?) {
         val node = objectMapper.readTree(message.body)
 
-        val destination = node.get("destination").textValue()!!
+        val destination = node.get("destination").stringValue()!!
         val payload = objectMapper.treeToValue(node.get("payload"), Any::class.java)
 
         messagingTemplate.convertAndSend(destination, payload)

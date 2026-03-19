@@ -4,7 +4,6 @@ import com.back.IntegrationTest
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.web.server.LocalServerPort
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -14,9 +13,6 @@ import java.util.concurrent.TimeUnit
 
 // @Disabled
 class PostSseServiceTest : IntegrationTest() {
-
-    @LocalServerPort
-    private var port: Int = 0
 
     @Autowired
     private lateinit var postSseService: PostSseService

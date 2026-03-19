@@ -1,6 +1,6 @@
 package com.back.boundedContexts.post.config
 
-import com.back.IntegrationTest
+import com.back.IntegrationTestBase
 import com.back.boundedContexts.member.app.shared.ActorFacade
 import com.back.boundedContexts.member.domain.shared.Member
 import com.back.boundedContexts.post.app.PostFacade
@@ -9,7 +9,6 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.messaging.converter.JacksonJsonMessageConverter
 import org.springframework.messaging.simp.stomp.StompFrameHandler
 import org.springframework.messaging.simp.stomp.StompHeaders
@@ -24,11 +23,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 // @Disabled
-class PostWebSocketSecurityConfigTest : IntegrationTest() {
-
-    @LocalServerPort
-    private var port: Int = 0
-
+class PostWebSocketSecurityConfigTest : IntegrationTestBase() {
     @Autowired
     private lateinit var actorFacade: ActorFacade
 

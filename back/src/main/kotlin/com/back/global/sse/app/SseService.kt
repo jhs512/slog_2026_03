@@ -48,16 +48,12 @@ class SseService(
             mapOf("channel" to channel, "data" to data)
         )
 
-        try {
-            redisTemplate.convertAndSend(CHANNEL, json)
-        } catch (_: Exception) {
-            dispatch(channel, data)
-        }
+        redisTemplate.convertAndSend(CHANNEL, json)
     }
 
     override fun onMessage(message: Message, pattern: ByteArray?) {
         val node = objectMapper.readTree(message.body)
-        val channel = node.get("channel").asText()
+        val channel = node.get("channel").asString()
         val data = objectMapper.treeToValue(node.get("data"), Any::class.java)
 
         dispatch(channel, data)

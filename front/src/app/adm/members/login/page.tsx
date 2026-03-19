@@ -1,7 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-
 import withLogout from "@/global/auth/hoc/withLogout";
 import { useAuthContext } from "@/global/auth/hooks/useAuth";
 import client from "@/global/backend/client";
@@ -66,7 +64,8 @@ export default withLogout(function Page() {
 
     toast.success(response.data.msg);
     setLoginMember(response.data.data.item);
-    router.replace("/");
+    window.location.replace("/");
+    window.location.reload();
   };
 
   return (

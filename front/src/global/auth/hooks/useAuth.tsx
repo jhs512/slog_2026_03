@@ -45,6 +45,7 @@ export default function useAuth() {
       }
 
       window.location.replace("/");
+      window.location.reload();
     });
   };
 

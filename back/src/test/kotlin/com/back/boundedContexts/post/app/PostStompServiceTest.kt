@@ -4,7 +4,6 @@ import com.back.IntegrationTest
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.messaging.converter.JacksonJsonMessageConverter
 import org.springframework.messaging.simp.stomp.StompFrameHandler
 import org.springframework.messaging.simp.stomp.StompHeaders
@@ -18,9 +17,6 @@ import java.util.concurrent.TimeUnit
 
 // @Disabled
 class PostStompServiceTest : IntegrationTest() {
-
-    @LocalServerPort
-    private var port: Int = 0
 
     @Autowired
     private lateinit var postStompService: PostStompService
