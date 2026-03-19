@@ -1,7 +1,7 @@
 # GitHub Actions 워크플로우
 
 이 폴더는 서비스 배포 파이프라인을 구성합니다.  
-실행 파일은 `.github/workflows/deploy.yml` 하나이며, `main` 브랜치에 `back` 관련 변경사항이 올라오면 **Blue/Green 무중단 배포**가 실행됩니다.
+실행 파일은 `.github/workflows/deploy.yml` 하나이며, `main` 브랜치에 `back/src/**`, `back/.env`, `back/build.gradle.kts`, `back/settings.gradle.kts`, `back/Dockerfile`, 또는 워크플로우 파일 자체 변경이 올라오면 **Blue/Green 무중단 배포**가 실행됩니다.
 
 ---
 
@@ -15,6 +15,7 @@
 2. **Docker Build & Push (`buildImageAndPush`)**
    - `back/`를 컨텍스트로 하여 Docker 이미지를 빌드합니다.
    - GHCR(`ghcr.io`)에 `latest`와 계산된 버전 태그를 같이 푸시합니다.
+   - 푸시 전 저장소 소유자명을 소문자로 정규화해 GHCR 경로를 맞춥니다.
    - `cache-from`, `cache-to`를 써서 빌드 캐시를 활용합니다.
 
 3. **Blue/Green 무중단 배포 (`deploy`)**
@@ -46,9 +47,10 @@
 `deploy` 잡에서 동작하는 블루그린 배포 스크립트(`cat << 'SCRIPT_EOF'`)는 다음 로직을 거칩니다.
 
 - **포트 충돌 회피**: 컨테이너 로컬 포트(`8080`)를 EC2 호스트 포트로 직접 노출하지 않고 도커 네트워크(`common`)에서 컨테이너명 기반으로 통신합니다.
-- **NPMplus API 제어**: `http://127.0.0.1:81`의 NPMplus Admin API(`/api/tokens`, `/api/nginx/proxy-hosts`)로 로그인 후 프록시를 조회/갱신합니다.
+- **NPMplus API 제어**: `https://127.0.0.1:81`의 NPMplus Admin API(`/api/tokens`, `/api/nginx/proxy-hosts`)로 로그인 후 프록시를 조회/갱신합니다.
 - **Health Check 전략**: `Green` 컨테이너가 컨테이너 IP 기준 `actuator/health`에서 `200`을 반환할 때까지 대기 후 업스트림을 전환합니다.
 - **안전 장치**: 새 컨테이너가 헬스체크 실패 시 기존 `Blue`는 유지한 채 배포를 실패 처리해 가용성 리스크를 낮춥니다.
+- **동시 실행 제어**: `concurrency` 설정으로 같은 ref에 대한 실행은 순차적으로 관리하며, 기존 실행을 중간 취소하지 않습니다.
 
 ## 🧩 NPMplus SSE 버퍼링 주의사항
 
