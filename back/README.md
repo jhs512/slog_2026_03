@@ -485,7 +485,7 @@ classDiagram
     Post --|> PostHasPolicy
 ```
 
-실제로는 Kotlin interface + extension/mixin 스타일이지만, 읽는 관점에서는 "게시글 도메인의 책임 분할"로 보면 된다.
+실제로는 Kotlin interface + 기본 구현(디폴트 멤버) 기반으로 구성되어 있고, 읽는 관점에서는 "게시글 도메인의 책임 분할"로 보면 된다.
 
 ---
 
@@ -4405,8 +4405,7 @@ interface PostMember : MemberAware {
 }
 ```
 
-`PostMember` 는 `post` 패키지에 있지만 `Member` 를 확장하는 인터페이스다. `Member` 는 `PostMember` 를 구현하지 않지만, `MemberProxy` 가 이를 위임 형태로
-활용한다.
+`PostMember` 는 `post` 패키지에 있지만 `Member` 를 확장하는 인터페이스다. `Member` 는 `PostMember` 를 직접 구현하며, `MemberProxy` 는 이를 상속 기반으로 감싼 형태로 함께 활용한다.
 
 잠깐 — 실제로 `Member` 가 직접 `PostMember` 를 구현하지 않으면 `author.incrementPostsCount()` 가 어떻게 컴파일되는가? `PostFacade.write` 코드를 보면
 `author.incrementPostsCount()` 를 호출한다. `Member` 가 `PostMember` 를 구현해야만 이 호출이 가능하다. 실제 코드에서 `Member` 는 `PostMember` 를
