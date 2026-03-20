@@ -1,6 +1,6 @@
 # slog-2026-03
 
-이 리포지토리는 Next.js 기반 클라이언트 프론트엔드와 Kotlin + Spring Boot API 백엔드, 그리고 이를 호스팅하기 위한 Terraform (AWS) 인프라로 구성된 풀스택 서비스 프로젝트입니다.
+이 리포지토리는 Next.js 기반 클라이언트 프론트엔드, Kotlin + Spring Boot API 백엔드, 그리고 이를 호스팅하기 위한 Terraform + AWS EC2 부트스트랩 인프라로 구성된 풀스택 서비스 프로젝트입니다.
 본 루트 문서는 하위 도메인별 문서들의 빠른 접근을 돕는 통합 허브(Hub)입니다.
 
 ---
@@ -35,7 +35,7 @@ flowchart TD
 |------------|----------|-------------------|-----------|
 | **Backend** | `back/` | Kotlin, Spring Boot, JPA, QueryDSL, OAuth2 | [📖 백엔드 63강 설계 리뷰 보기](back/README.md) |
 | **Frontend** | `front/` | Next.js (App Router), TypeScript, Tailwind | [📖 프론트엔드 연동 가이드 보기](front/README.md) |
-| **Infra** | `infra/` | Terraform, AWS EC2, VPC, Security Group | [📖 인프라 프로비저닝 가이드 보기](infra/README.md) |
+| **Infra** | `infra/` | Terraform, AWS EC2, VPC, Security Group, Docker bootstrap | [📖 인프라 프로비저닝 가이드 보기](infra/README.md) |
 | **CI/CD** | `.github/workflows/` | GitHub Actions, GHCR, Blue/Green Deploy | [📖 자동화 배포 파이프라인 가이드 보기](.github/workflows/README.md) |
 
 ---
@@ -47,7 +47,7 @@ flowchart TD
 ### 1) 백엔드 기동
 ```bash
 cd back
-# Docker 환경이 준비되어 있다면 (DB 및 Redis 필수)
+# PostgreSQL / Redis가 준비되어 있어야 함
 ./gradlew bootRun
 ```
 
@@ -64,5 +64,6 @@ pnpm dev
 cd infra
 cp secrets.tf.default secrets.tf # 민감 정보 입력
 terraform init
+terraform plan
 terraform apply
 ```
