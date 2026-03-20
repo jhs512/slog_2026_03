@@ -771,8 +771,9 @@ fun genAccessToken(member: Member): String =
 
 ```kotlin
 @Component
-@RequestScope
 class Rq(
+    private val req: HttpServletRequest,
+    private val resp: HttpServletResponse,
     private val actorFacade: ActorFacade,
 ) {
     val actorOrNull: Member?
@@ -781,16 +782,28 @@ class Rq(
 
     val actor: Member
         get() = actorOrNull ?: throw AppException("401-1", "로그인 후 이용해주세요.")
+
+    fun getHeader(name: String, defaultValue: String): String =
+        req.getHeader(name) ?: defaultValue
+
+    fun setHeader(name: String, value: String) {
+        resp.setHeader(name, value)
+    }
+
+    fun getCookieValue(name: String, defaultValue: String): String = ...
+    fun setCookie(name: String, value: String?) { ... }
+    fun deleteCookie(name: String) { ... }
 }
 ```
 
 해석하면:
 
 - 인증 정보는 `SecurityContext` 에 있다.
-- 하지만 컨트롤러가 시큐리티 구현 세부사항을 직접 다루지 않게 하려고 `Rq` 를 둔다.
+- 하지만 컨트롤러와 필터가 시큐리티/서블릿 구현 세부사항을 직접 만지지 않게 하려고 `Rq` 를 둔다.
 - 그래서 컨트롤러는 그냥 `rq.actor` 만 쓰면 된다.
+- 쿠키/헤더 읽기와 쓰기도 `Rq` 로 모아서 처리한다.
 
-즉 `Rq` 는 HTTP 요청 문맥에서 "현재 사용자"를 꺼내는 편의 객체다.
+즉 `Rq` 는 HTTP 요청 문맥에서 "현재 사용자", "헤더", "쿠키"를 다루는 얇은 웹 어댑터다.
 
 ---
 
@@ -3327,8 +3340,8 @@ fun incrementHitCount() {
 - 집계값을 읽을 때 JOIN 이 필요하다. `Post` 하나를 읽으면서 `PostAttr` 도 같이 읽어야 한다.
 - `likesCount` 같은 단순 숫자 하나를 위해 별도 테이블 행이 필요하다.
 
-`Post` 에 `@OneToOne` 으로 `likesCountAttr`, `commentsCountAttr`, `hitCountAttr` 가 각각 연결되어 있다. 실제로 이 패턴이 득인지 실인지는 70강(count
-attr 패턴의 장단점)에서 다시 평가한다.
+`Post` 에 `@OneToOne` 으로 `likesCountAttr`, `commentsCountAttr`, `hitCountAttr` 가 각각 연결되어 있다. 이 프로젝트는 현재 이 패턴을 채택했고, 이후에도
+성능과 복잡도의 트레이드오프를 함께 의식하면서 읽는 편이 좋다.
 
 ---
 
