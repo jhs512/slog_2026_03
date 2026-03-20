@@ -522,7 +522,7 @@ sequenceDiagram
     else accessToken 유효
         F->>F: apiKey/accessToken 추출
         F->>A: payload(accessToken)
-        A-->>F: Member payload
+        A-->>F: AccessTokenPayload
         F->>S: Authentication 저장
     else apiKey 만 유효
         F->>F: apiKey/accessToken 추출
@@ -1185,6 +1185,7 @@ JPA 관련 어노테이션이 붙은 클래스는 자동으로 `open` 이 된다
 
 ```kotlin
 // Spring
+implementation("org.springframework:spring-test")
 implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 implementation("org.springframework.boot:spring-boot-starter-data-redis")
 implementation("org.springframework.boot:spring-boot-starter-security")
@@ -1192,6 +1193,10 @@ implementation("org.springframework.boot:spring-boot-starter-security-oauth2-cli
 implementation("org.springframework.boot:spring-boot-starter-session-data-redis")
 implementation("org.springframework.boot:spring-boot-starter-validation")
 implementation("org.springframework.boot:spring-boot-starter-webmvc")
+implementation("org.springframework.boot:spring-boot-starter-cache")
+implementation("org.springframework.boot:spring-boot-starter-actuator")
+implementation("org.springframework.boot:spring-boot-starter-websocket")
+implementation("org.springframework.security:spring-security-messaging")
 
 // Auth
 implementation("io.jsonwebtoken:jjwt-api:0.13.0")
@@ -1224,6 +1229,10 @@ runtimeOnly("org.postgresql:postgresql")
 
 Redis 클라이언트가 들어간다. 캐시, 세션, 분산 락 등에 쓸 수 있다.
 
+### `spring-test`
+
+보통 테스트 전용으로만 보지만, 이 프로젝트는 프로덕션 코드의 `InternalRestClient` 에서 `MockMvc` 를 직접 쓰기 위해 런타임 의존성으로도 포함한다.
+
 ### `security` + `oauth2-client`
 
 Spring Security를 쓰고, 소셜 로그인(카카오, 구글, 네이버)도 지원한다. 인증이 단순하지 않다는 뜻이다.
@@ -1235,6 +1244,18 @@ Spring Security를 쓰고, 소셜 로그인(카카오, 구글, 네이버)도 지
 ### `validation`
 
 `@Valid`, `@NotBlank`, `@Size` 같은 입력 검증 어노테이션을 쓴다.
+
+### `starter-cache`
+
+Redis 캐시 매니저와 TTL 설정을 써서 캐시를 운영한다.
+
+### `starter-actuator`
+
+헬스체크와 운영 점검용 엔드포인트를 제공한다. 배포 워크플로우의 `/actuator/health` 체크도 여기에 기대고 있다.
+
+### `starter-websocket` + `spring-security-messaging`
+
+STOMP WebSocket 과 메시지 보안 구성을 위해 필요하다. 이 프로젝트는 HTTP만이 아니라 `/ws` 연결도 다룬다.
 
 ### `jjwt`
 
@@ -1291,6 +1312,9 @@ spring:
 | `jjwt`                       | JWT를 직접 다룬다      |
 | `querydsl` + `kapt`          | 동적 쿼리와 Q클래스가 있다  |
 | `data-redis` + `shedlock`    | Redis를 여러 용도로 쓴다 |
+| `cache` + `actuator`         | 운영/헬스체크 고려가 있다    |
+| `websocket` + `messaging`    | 실시간 연결도 다룬다       |
+| `spring-test`                | 내부 API 호출까지 MockMvc로 처리한다 |
 | `postgresql`                 | DB는 PostgreSQL   |
 | Java 24 + 가상 스레드             | 최신 스택을 쓴다        |
 
@@ -1576,7 +1600,7 @@ eventPublisher.publish(PostWrittenEvent(...))
 sequenceDiagram
     participant C as Client
     participant F as CustomAuthenticationFilter
-    participant SC as SecurityConfig
+    participant S as SecurityContext
     participant CT as ApiV1PostController
     participant PF as PostFacade
     participant P as Post (Entity)
@@ -1586,8 +1610,8 @@ sequenceDiagram
 
     C->>F: POST /post/api/v1/posts
     F->>F: apiKey/accessToken 추출 및 인증
-    F->>SC: SecurityContext에 사용자 저장
-    SC->>CT: 요청 전달
+    F->>S: 사용자 저장
+    F->>CT: 요청 전달
     CT->>PF: write(rq.actor, title, content, ...)
     PF->>P: Post(0, author, title, content, ...) 생성
     PF->>PR: save(post)
@@ -2059,6 +2083,7 @@ class SecurityConfig(
                 memberSecurityConfigurer.configure(this)
                 postSecurityConfigurer.configure(this)
 
+                authorize("/sse/**", permitAll)
                 authorize("/*/api/*/adm/**", hasRole("ADMIN"))
                 authorize("/*/api/*/**", authenticated)
                 authorize(anyRequest, permitAll)
@@ -2068,6 +2093,7 @@ class SecurityConfig(
             formLogin { disable() }
             logout { disable() }
             httpBasic { disable() }
+            cors { }
 
             sessionManagement {
                 sessionCreationPolicy = SessionCreationPolicy.STATELESS
@@ -2086,6 +2112,18 @@ class SecurityConfig(
             }
 
             addFilterBefore<UsernamePasswordAuthenticationFilter>(customAuthenticationFilter)
+
+            exceptionHandling {
+                authenticationEntryPoint = AuthenticationEntryPoint { _, response, _ ->
+                    response.status = 401
+                    response.writer.write(objectMapper.writeValueAsString(RsData<Void>("401-1", "로그인 후 이용해주세요.")))
+                }
+
+                accessDeniedHandler = AccessDeniedHandler { _, response, _ ->
+                    response.status = 403
+                    response.writer.write(objectMapper.writeValueAsString(RsData<Void>("403-1", "권한이 없습니다.")))
+                }
+            }
         }
     }
 }
@@ -2128,8 +2166,9 @@ authorizeHttpRequests {
 2. `memberSecurityConfigurer` 가 회원가입, 프로필 이미지 경로를 공개로 연다.
 3. `postSecurityConfigurer` 가 게시글/댓글 조회 경로를 공개로 연다.
 4. `/*/api/*/adm/**` 는 ADMIN 권한 필요.
-5. `/*/api/*/**` 는 인증 필요.
-6. 나머지(예: `/swagger-ui`, OAuth2 경로)는 모두 허용.
+5. `/sse/**` 는 공개 연결 허용.
+6. `/*/api/*/**` 는 인증 필요.
+7. 나머지(예: `/swagger-ui`, OAuth2 경로)는 모두 허용.
 
 ---
 
@@ -2680,31 +2719,43 @@ class MemberProxy(
     username: String,
     nickname: String,
 ) : Member(id, username, null, nickname) {
+    private var useRealState = false
+
+    private fun markUseReal() {
+        useRealState = true
+    }
 
     override var nickname: String
-        get() = super.nickname
+        get() = if (useRealState) real.nickname else super.nickname
         set(value) {
             super.nickname = value
             real.nickname = value   // 진짜 엔티티에도 반영
         }
 
-    override var apiKey
-        get() = real.apiKey         // 조회는 진짜 엔티티에서
+    override val name: String
+        get() = if (useRealState) real.name else super.name
+
+    override var apiKey: String
+        get() {
+            markUseReal()
+            return real.apiKey
+        }
         set(value) {
+            markUseReal()
             real.apiKey = value
         }
 
-    // createdAt, modifiedAt, profileImgUrl 도 real 쪽 프로퍼티를 override 해서 연결
+    // createdAt, modifiedAt, profileImgUrl, password 도 같은 방식으로 real 에 연결
 }
 ```
 
-`MemberProxy` 는 `Member` 를 상속한 뒤, 두 층의 데이터를 겹쳐서 쓴다.
+`MemberProxy` 는 토큰에서 얻은 값과 JPA 참조를 섞어 들고 있다가, 실제 DB 쪽 상태를 한 번 쓰기 시작하면 그 뒤부터는 `nickname`, `name` 도 포함해 `real` 기준으로 본다.
 
 **① 상속받은 `Member` 본체에는 토큰에서 이미 확보한 값(id, username, nickname)을 넣는다.**
 
 JWT 파싱으로 얻은 `id`, `username`, `name` 은 이미 신뢰할 수 있다. DB를 안 봐도 된다.
 
-**② DB가 필요한 값(apiKey, profileImgUrl, createdAt 등)만 override 해서 `real` JPA 참조에 연결한다.**
+**② DB가 필요한 값(apiKey, profileImgUrl, createdAt 등)을 읽기 시작하면 그 뒤부터는 `real` 상태를 우선한다.**
 
 `real` 은 `getReferenceById` 로 얻은 JPA 프록시다. 실제로 `real.apiKey` 를 처음 읽을 때 DB 조회가 일어난다.
 
@@ -2716,22 +2767,31 @@ JWT 파싱으로 얻은 `id`, `username`, `name` 은 이미 신뢰할 수 있다
 
 ```kotlin
 @Component
-@RequestScope
-class Rq(private val actorFacade: ActorFacade) {
+class Rq(
+    private val req: HttpServletRequest,
+    private val resp: HttpServletResponse,
+    private val actorFacade: ActorFacade,
+) {
     val actorOrNull: Member?
         get() = (SecurityContextHolder.getContext()?.authentication?.principal as? SecurityUser)
             ?.let { actorFacade.memberOf(it) }
 
     val actor: Member
         get() = actorOrNull ?: throw AppException("401-1", "로그인 후 이용해주세요.")
+
+    fun getHeader(name: String, defaultValue: String): String = ...
+    fun setHeader(name: String, value: String) { ... }
+    fun getCookieValue(name: String, defaultValue: String): String = ...
+    fun setCookie(name: String, value: String?) { ... }
+    fun deleteCookie(name: String) { ... }
 }
 ```
-
-`@RequestScope` 다. HTTP 요청 1개당 하나의 `Rq` 인스턴스가 만들어진다.
 
 `actorOrNull` 은 로그인하지 않은 사용자도 접근 가능한 API에서 쓴다. 게시글 목록 조회 같은 경우, 비로그인 사용자는 `null` 이고 로그인 사용자는 `Member` 를 반환한다.
 
 `actor` 는 로그인이 반드시 필요한 API에서 쓴다. 로그인이 안 돼 있으면 바로 `AppException("401-1", ...)` 을 던진다.
+
+현재 `Rq` 는 단순 현재 사용자 접근창구를 넘어서, 헤더/쿠키 읽기와 쓰기까지 함께 맡는 웹 어댑터 역할도 한다.
 
 컨트롤러는 이것만 안다.
 
@@ -3210,13 +3270,21 @@ abstract class BaseTime(id: Int = 0) : BaseEntity() {
 override fun equals(other: Any?): Boolean {
     if (other === this) return true
     if (other !is BaseEntity) return false
+    if (Hibernate.getClass(this) != Hibernate.getClass(other)) return false
+    if (id == 0 || other.id == 0) return false
     return id == other.id
 }
 
-override fun hashCode(): Int = id.hashCode()
+override fun hashCode(): Int =
+    if (id != 0) 31 * Hibernate.getClass(this).hashCode() + id.hashCode()
+    else super.hashCode()
 ```
 
-JPA 엔티티의 동등성은 `id` 로 판단한다. `id` 가 같으면 같은 엔티티다. 이 규칙이 없으면 컬렉션에서 같은 엔티티가 중복 처리될 수 있다.
+핵심 의도는 이렇다.
+
+- 저장된 엔티티는 `id` 기준으로 같은 엔티티로 본다.
+- 저장 전 엔티티(`id = 0`)는 서로 같지 않다.
+- Hibernate 프록시가 끼어도 `Hibernate.getClass(...)` 기준으로 같은 타입이면 비교할 수 있다.
 
 ---
 
@@ -3413,9 +3481,11 @@ data class PageDto<T : Any>(
         pageable = PageableDto(
             pageNumber = page.pageable.pageNumber + 1,  // 0-based → 1-based
             pageSize = page.pageable.pageSize,
+            offset = page.pageable.offset,
             totalElements = page.totalElements,
             totalPages = page.totalPages,
-            ...
+            numberOfElements = page.numberOfElements,
+            paged = page.pageable.isPaged,
     )
     )
 }
@@ -3514,7 +3584,8 @@ member/
 │   ├── MemberFacade.kt
 │   └── shared/
 │       ├── ActorFacade.kt
-│       └── AuthTokenService.kt
+│       ├── AuthTokenService.kt
+│       └── OneTimeTokenService.kt
 ├── config/
 │   ├── MemberSecurityConfigurer.kt
 │   └── shared/
