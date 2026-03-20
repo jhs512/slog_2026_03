@@ -1,7 +1,9 @@
 package com.back.boundedContexts.member.domain.shared
 
+import com.back.boundedContexts.post.domain.Post
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import java.time.Instant
 
 class MemberTest {
     @Test
@@ -21,5 +23,38 @@ class MemberTest {
         assertThat(apiKey1).matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         assertThat(apiKey2).matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         assertThat(apiKey1).isNotEqualTo(apiKey2)
+    }
+
+    @Test
+    fun `저장 전 엔티티는 id가 0이어도 서로 같지 않다`() {
+        val member1 = Member(0, "user-a", null, "유저A")
+        val member2 = Member(0, "user-b", null, "유저B")
+
+        assertThat(member1).isNotEqualTo(member2)
+    }
+
+    @Test
+    fun `다른 엔티티 타입은 같은 id여도 같지 않다`() {
+        val member = Member(1, "user1", null, "유저1")
+        val post = Post(1, member, "제목", "내용", true, true)
+
+        assertThat(member).isNotEqualTo(post)
+    }
+
+    @Test
+    fun `MemberProxy 는 real 을 한 번 사용한 뒤부터 nickname 과 name 도 real 기준으로 본다`() {
+        val real = Member(1, "user1", null, "DB닉네임")
+        real.createdAt = Instant.now()
+        real.modifiedAt = Instant.now()
+
+        val proxy = MemberProxy(real, 1, "user1", "토큰닉네임")
+
+        assertThat(proxy.nickname).isEqualTo("토큰닉네임")
+        assertThat(proxy.name).isEqualTo("토큰닉네임")
+
+        proxy.createdAt
+
+        assertThat(proxy.nickname).isEqualTo("DB닉네임")
+        assertThat(proxy.name).isEqualTo("DB닉네임")
     }
 }
