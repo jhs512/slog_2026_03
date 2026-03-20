@@ -1,64 +1,231 @@
-# GitHub Actions 워크플로우
+# GitHub Actions 배포 노트
 
-이 폴더는 서비스 배포 파이프라인을 구성합니다.  
-실행 파일은 `.github/workflows/deploy.yml` 하나이며, `main` 브랜치에 `back/src/**`, `back/.env`, `back/build.gradle.kts`, `back/settings.gradle.kts`, `back/Dockerfile`, 또는 워크플로우 파일 자체 변경이 올라오면 **Blue/Green 무중단 배포**가 실행됩니다.
+이 문서는 `.github/workflows/` 아래 배포 자동화를 빠르게 이해하기 위한 강의형 README다.  
+설명은 실제 [`deploy.yml`](C:/Users/jangk/IdeaProjects/slog_2026_03/.github/workflows/deploy.yml) 기준으로 진행한다.
 
----
+대상 독자:
 
-## 🔄 배포 파이프라인 개요
-
-`deploy.yml`은 4개의 Job으로 구성됩니다.
-
-1. **Tag Calculation (`calculateTag`)**
-   - `mathieudutour/github-tag-action`을 `dry_run: true`로 호출해 다음 태그 값을 계산만 합니다.
-
-2. **Docker Build & Push (`buildImageAndPush`)**
-   - `back/`를 컨텍스트로 하여 Docker 이미지를 빌드합니다.
-   - GHCR(`ghcr.io`)에 `latest`와 계산된 버전 태그를 같이 푸시합니다.
-   - 푸시 전 저장소 소유자명을 소문자로 정규화해 GHCR 경로를 맞춥니다.
-   - `cache-from`, `cache-to`를 써서 빌드 캐시를 활용합니다.
-
-3. **Blue/Green 무중단 배포 (`deploy`)**
-   - AWS 자격증명으로 SSM 실행 권한을 구성한 뒤, 타겟 EC2에 배포 스크립트를 보내 실행합니다.
-   - NPMplus API로 대상 Proxy Host를 조회/생성하고, Green 슬롯 컨테이너를 기동합니다.
-   - Green이 `http://{컨테이너 IP}:8080/actuator/health` 200 응답을 보일 때까지 대기한 뒤, Proxy Host의 upstream을 Green으로 전환합니다.
-   - 전환 성공 시 기존 Blue 컨테이너는 종료/정리하고, 불필요한 로컬 이미지를 정리합니다.
-
-4. **Tag & Release (`makeTagAndRelease`)**
-   - 배포가 성공한 뒤 `github-tag-action`으로 실제 태그 생성 후 GitHub 릴리스를 발행합니다.
+- GitHub Actions 기본 문법을 아는 사람
+- Docker build/push 흐름을 아는 사람
+- 이 프로젝트 배포가 "어떤 순서로, 어떤 가정 위에서" 돌아가는지 알고 싶은 사람
 
 ---
 
-## 🔐 필요 GitHub Secrets
+## 강의 구성
 
-이 배포를 정상적으로 작동시키기 위해서는 GitHub 리포지토리의 `Settings > Secrets and variables > Actions` 메뉴에서 아래의 비밀키들이 설정되어야 합니다.
-
-- **`AWS_REGION`**: SSM을 구동할 타겟 인프라의 AWS 리전 (예: `ap-northeast-2`)
-- **`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`**: 대상 EC2를 관리하고 SSM 명령을 하달할 수 있는 권한을 가진 AWS IAM 사용자의 자격 증명 (인프라 생성 시 할당됨)
-- **`DOT_ENV`**: 운영 `.env` 원본 텍스트(인코딩 전)  
-  - 배포 스크립트는 실행 단계에서 Base64로 변환 후 `/tmp/.env`로 저장해 컨테이너에 주입합니다.
-
-참고: 스크립트는 EC2의 `/etc/environment`에서 `PASSWORD_1`, `APP_1_DOMAIN`를 읽어 NPMplus 로그인 및 도메인 탐색에 사용합니다. 해당 값이 없다면 배포가 실패할 수 있습니다.
+1. 이 워크플로우를 한 문장으로 요약하면
+2. 언제 실행되는가
+3. 전역 환경 변수는 무엇을 뜻하는가
+4. Job 1 — 다음 태그 계산
+5. Job 2 — Docker 이미지 빌드와 GHCR 푸시
+6. Job 3 — SSM 기반 Blue/Green 무중단 배포
+7. Job 4 — 실제 태그/릴리스 생성
+8. GitHub Secrets는 무엇이 필요한가
+9. 이 워크플로우에서 배울 수 있는 것
 
 ---
 
-## ⚙️ 상세: Blue / Green 메커니즘
+# 1강. 이 워크플로우를 한 문장으로 요약하면
 
-`deploy` 잡에서 동작하는 블루그린 배포 스크립트(`cat << 'SCRIPT_EOF'`)는 다음 로직을 거칩니다.
+이 워크플로우는:
 
-- **포트 충돌 회피**: 컨테이너 로컬 포트(`8080`)를 EC2 호스트 포트로 직접 노출하지 않고 도커 네트워크(`common`)에서 컨테이너명 기반으로 통신합니다.
-- **NPMplus API 제어**: `https://127.0.0.1:81`의 NPMplus Admin API(`/api/tokens`, `/api/nginx/proxy-hosts`)로 로그인 후 프록시를 조회/갱신합니다.
-- **Health Check 전략**: `Green` 컨테이너가 컨테이너 IP 기준 `actuator/health`에서 `200`을 반환할 때까지 대기 후 업스트림을 전환합니다.
-- **안전 장치**: 새 컨테이너가 헬스체크 실패 시 기존 `Blue`는 유지한 채 배포를 실패 처리해 가용성 리스크를 낮춥니다.
-- **동시 실행 제어**: `concurrency` 설정으로 같은 ref에 대한 실행은 순차적으로 관리하며, 기존 실행을 중간 취소하지 않습니다.
+> `main` 브랜치의 백엔드 관련 변경을 감지하면, 버전 태그를 미리 계산하고, Docker 이미지를 GHCR에 올린 뒤, AWS SSM으로 EC2에서 Blue/Green 스위치를 수행하고, 마지막에 태그와 릴리스를 만드는 파이프라인이다.
 
-## 🧩 NPMplus SSE 버퍼링 주의사항
+즉 단계로 풀면:
 
-`NPMplus` 템플릿 기준으로 `npmplus_proxy_response_buffering: true`면 Nginx의 `proxy_buffering off`가 적용됩니다.  
-즉, 값이 `true`일 때 SSE에서 버퍼링이 꺼집니다.  
-⚠️ 오해하지 말 것: **true=켜짐**이 아니라 **true=버퍼링 OFF**입니다.
+1. 다음 버전 계산
+2. 이미지 빌드/푸시
+3. EC2 원격 배포
+4. 태그/릴리스 마무리
 
-현재 `deploy.yml`의 Proxy Host 생성/전환 payload는 다음처럼 설정되어 있습니다.
+---
+
+# 2강. 언제 실행되는가
+
+트리거는 [`deploy.yml`](C:/Users/jangk/IdeaProjects/slog_2026_03/.github/workflows/deploy.yml)의 `on.push`다.
+
+핵심 조건:
+
+- 브랜치: `main`
+- 경로:
+  - `.github/workflows/*.yml`
+  - `.github/workflows/*.yaml`
+  - `back/.env`
+  - `back/src/**`
+  - `back/build.gradle.kts`
+  - `back/settings.gradle.kts`
+  - `back/Dockerfile`
+
+즉 프론트 전용 변경에는 반응하지 않고, **백엔드 또는 배포 파이프라인 변경**에만 반응한다.
+
+---
+
+# 3강. 전역 환경 변수는 무엇을 뜻하는가
+
+워크플로우 상단 `env:` 블록은 배포 스크립트 전체의 전제다.
+
+예를 들면:
+
+- `IMAGE_REPOSITORY`
+  - GHCR 이미지 이름
+- `CONTAINER_1_NAME`, `CONTAINER_2_NAME`
+  - Blue/Green 슬롯 이름
+- `CONTAINER_PORT`
+  - 컨테이너 내부 포트 (`8080`)
+- `EC2_INSTANCE_TAG_NAME`
+  - 배포 대상 EC2를 찾는 Name 태그
+- `DOCKER_NETWORK`
+  - EC2 안 Docker 네트워크 이름 (`common`)
+- `BACK_DIR`
+  - Docker build context (`back`)
+- `NPM_BASE_URL`
+  - NPMplus Admin API (`https://127.0.0.1:81`)
+
+즉 이 워크플로우는 “어느 서버에, 어떤 컨테이너 이름으로, 어떤 포트 구조로 배포할 것인가”를 전역 변수로 고정해둔 구조다.
+
+---
+
+# 4강. Job 1 — 다음 태그 계산
+
+첫 번째 job은 `calculateTag` 다.
+
+```yaml
+calculateTag:
+  runs-on: ubuntu-latest
+  outputs:
+    tag_name: ${{ steps.dry_run.outputs.new_tag }}
+  steps:
+    - uses: actions/checkout@v6
+
+    - name: 다음 버전 태그 계산 (dry-run)
+      id: dry_run
+      uses: mathieudutour/github-tag-action@v6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        dry_run: true
+```
+
+핵심은:
+
+- 실제 태그를 아직 만들지 않음
+- “이번 배포가 성공하면 무슨 태그가 될까”만 미리 계산
+- 그 결과를 다음 job들이 공유
+
+이렇게 해야 이미지 태그와 최종 릴리스 태그를 같은 값으로 맞출 수 있다.
+
+---
+
+# 5강. Job 2 — Docker 이미지 빌드와 GHCR 푸시
+
+두 번째 job은 `buildImageAndPush` 다.
+
+핵심 흐름:
+
+1. 저장소 checkout
+2. Buildx 설치
+3. GHCR 로그인
+4. repository owner를 소문자로 정규화
+5. `back/` 기준 Docker build
+6. `latest` + 계산된 버전 태그 둘 다 push
+
+중요한 부분은 태그 두 개를 동시에 올린다는 점이다.
+
+```yaml
+tags: |
+  ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_REPOSITORY }}:${{ needs.calculateTag.outputs.tag_name }}
+  ghcr.io/${{ env.OWNER_LC }}/${{ env.IMAGE_REPOSITORY }}:latest
+```
+
+이렇게 하면:
+
+- 사람이 보기 쉬운 `latest`
+- 배포 이력을 추적할 수 있는 고정 버전 태그
+
+를 동시에 유지할 수 있다.
+
+---
+
+# 6강. Job 3 — SSM 기반 Blue/Green 무중단 배포
+
+세 번째 job `deploy`가 진짜 핵심이다.
+
+구조를 단순화하면:
+
+```text
+GitHub Actions
+  -> AWS 자격 구성
+  -> Name 태그로 EC2 조회
+  -> .env를 base64로 인코딩
+  -> SSM으로 원격 스크립트 실행
+       -> NPMplus 로그인
+       -> 현재 upstream 확인
+       -> Blue / Green 역할 계산
+       -> Green 컨테이너 기동
+       -> /actuator/health 확인
+       -> Proxy Host upstream 전환
+       -> 이전 Blue 정리
+       -> 오래된 이미지 정리
+```
+
+## 1. 왜 SSM인가
+
+이 워크플로우는 SSH가 아니라 SSM을 쓴다.
+
+의도는 명확하다.
+
+- SSH 키 배포 부담 감소
+- EC2에 대한 표준 원격 실행 경로 확보
+- GitHub Actions에서 동기식으로 로그 수집 가능
+
+## 2. 왜 Blue/Green인가
+
+슬롯 이름은 고정이다.
+
+- `slog_1_1`
+- `slog_1_2`
+
+하지만 “blue/green” 역할은 매 배포마다 바뀐다.
+
+- 현재 운영 중인 쪽 = blue
+- 다음 후보 = green
+
+즉 blue/green은 이름이 아니라 **역할**이다.
+
+## 3. 왜 host port 매핑을 안 쓰는가
+
+배포 스크립트는 컨테이너를 이런 식으로 띄운다.
+
+```bash
+docker run -d --name "${GREEN}" \
+  --restart unless-stopped \
+  --network "${NET}" \
+  -e TZ=Asia/Seoul \
+  -v /tmp/.env:/app/.env:ro \
+  "${IMAGE}"
+```
+
+호스트 포트를 직접 publish하지 않는다.  
+대신 NPMplus가 같은 Docker 네트워크 `common` 안에서 컨테이너 이름 + 내부 포트로 프록시한다.
+
+이 방식의 장점:
+
+- blue, green 동시 기동 가능
+- 포트 충돌 없음
+- 프록시 전환만으로 트래픽 스위치 가능
+
+## 4. 헬스체크
+
+Green은 먼저 뜨고, `/actuator/health` 가 `200` 이 될 때까지 기다린다.
+
+```bash
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${CONTAINER_IP}:${PORT_IN}/actuator/health" || echo 000)
+```
+
+즉 “컨테이너가 떴다”가 아니라 “애플리케이션이 응답할 준비가 됐다”를 기준으로 전환한다.
+
+## 5. NPMplus SSE 버퍼링
+
+SSE는 `/sse/` location을 별도 설정한다.
 
 ```json
 {
@@ -70,4 +237,81 @@
 }
 ```
 
-`deploy.yml`에는 `NPMPLUS_SSE_RESPONSE_BUFFERING_OFF: true`로 고정해 두어 `/sse/`가 항상 스트리밍에 맞게 동작하도록 했습니다.
+주의:
+
+- 이름만 보면 `true=버퍼링 ON` 같지만
+- 이 템플릿에선 `true`일 때 실제로 `proxy_buffering off`
+
+즉 **SSE를 스트리밍답게 흘리기 위한 설정**이다.
+
+---
+
+# 7강. Job 4 — 실제 태그/릴리스 생성
+
+배포가 성공하면 마지막 job `makeTagAndRelease` 가 돈다.
+
+```yaml
+makeTagAndRelease:
+  runs-on: ubuntu-latest
+  needs: deploy
+```
+
+흐름:
+
+1. checkout
+2. `github-tag-action`으로 실제 태그 생성
+3. `softprops/action-gh-release`로 GitHub Release 생성
+
+포인트는 “배포 성공 후에만 태그를 확정한다”는 점이다.
+
+즉:
+
+- 계산만 한 태그
+- 실제 반영된 태그
+
+를 분리해서 실패한 배포가 릴리스 기록으로 남지 않게 한다.
+
+---
+
+# 8강. GitHub Secrets는 무엇이 필요한가
+
+최소한 이 값들이 필요하다.
+
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `DOT_ENV`
+
+또한 EC2 쪽 `/etc/environment`에는 이런 값이 이미 있어야 한다.
+
+- `PASSWORD_1`
+- `APP_1_DOMAIN`
+
+즉 GitHub Secrets와 EC2 부트스트랩 환경변수 둘 다 맞아야 배포가 돈다.
+
+---
+
+# 9강. 이 워크플로우에서 배울 수 있는 것
+
+- GitHub Actions job 분리와 output 전달
+- dry-run 태그 계산 후 실제 태그 확정하는 방식
+- GHCR 이중 태그 전략 (`latest` + version)
+- AWS SSM을 이용한 원격 배포
+- Docker 네트워크 기반 Blue/Green 스위치
+- NPMplus API로 프록시를 코드에서 전환하는 방식
+
+---
+
+## 결론
+
+이 워크플로우는 단순히 “이미지 빌드 후 서버에 올리기”가 아니다.  
+**태그 계산, 이미지 생성, 헬스체크, 프록시 스위치, 릴리스 기록**까지 하나의 흐름으로 묶어둔 배포 자동화다.
+
+읽을 때는:
+
+1. 언제 실행되는가
+2. 어떤 이미지 태그를 쓰는가
+3. EC2를 어떻게 찾는가
+4. Blue/Green 전환이 어디서 일어나는가
+
+이 네 가지만 먼저 보면 전체 구조가 잡힌다.

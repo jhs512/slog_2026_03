@@ -1,87 +1,316 @@
-# infra
+# 인프라 이해 노트
 
-이 디렉토리는 서비스의 배포 및 실행 환경을 구축하기 위한 **Terraform (AWS) 인프라 구성 코드** 디렉토리입니다.
-백엔드 코드와 분리되어 있지만, 실제 배포에 필요한 AWS 리소스와 EC2 부트스트랩까지 함께 정의합니다.
+이 문서는 `infra/` 디렉토리를 빠르게 이해하기 위한 강의형 README다.  
+설명은 실제 Terraform 코드 기준으로 진행하고, EC2 부트스트랩과 배포 파이프라인까지 함께 본다.
 
----
+대상 독자:
 
-## 🏗️ 구성 아키텍처 개요
-
-단일 EC2를 기반으로 하여 복잡성을 줄인 구조입니다.
-
-- **네트워크 (VPC)**
-  - VPC 1개, 퍼블릭 Subnet 4개, Internet Gateway 1개
-  - 외부 통신을 위한 Route Table 매핑
-- **보안 (Security Group & IAM)**
-  - Security Group: 편의성을 위해 기본적으로 인터넷에 열려 있도록(`0.0.0.0/0`) 설정됩니다. (실무 서비스 운영시 반드시 수정 필요)
-  - IAM Role & Instance Profile: `AmazonSSMManagedInstanceCore`, `AmazonS3FullAccess` 부여
-- **컴퓨팅 (EC2 Instance)**
-  - 인스턴스 타입: `t3.micro`
-  - OS 이미지(AMI): `Amazon Linux 2023`
-  - 현재 Terraform은 `subnet_2` 에 EC2 1대를 생성하고, Name 태그는 `${prefix}-ec2-1` 형식으로 부여합니다.
+- Terraform 기본 문법을 아는 사람
+- AWS VPC / EC2 / Security Group 개념을 아는 사람
+- 이 프로젝트 인프라가 "어떤 리소스를 만들고 왜 그렇게 구성했는지" 빠르게 파악하고 싶은 사람
 
 ---
 
-## ⚙️ EC2 부트스트랩 (User Data)
+## 강의 구성
 
-이 프로젝트의 인프라 핵심은 단순 인스턴스 생성이 아니라, EC2가 처음 기동(`Booting`)될 때 필요한 환경 설정과 도커 컨테이너들을 스스로 준비하도록 세팅된 `main.tf` 의 **`user_data` 셸 스크립트** 입니다.
-
-부트스트랩 스크립트는 다음 작업을 백그라운드에서 자동 순차 실행합니다:
-1. **타임존 설정**: 서버 기준 시간을 `Asia/Seoul` 로 변경
-2. **패키지 설치**: `dnf`를 통해 `git`, `docker` 등 필수 유틸리티 및 컨테이너 엔진 세팅
-3. **Swap 메모리 할당**: 마이크로 인스턴스의 메모리 한계를 우회하기 위해 4GB 의 가상 메모리 스왑 파일 세팅
-4. **필수 컨테이너 기동**:
-   - `npm_1 (NPMplus)`: 리버스 프록시 및 TLS 종단 처리
-   - `redis_1`: 분산락 및 캐시, 세션 관리 지원
-   - `pg_1 (PostgreSQL)`: 실제 데이터를 적재할 메인 RDBMS 구동
-   - 모든 컨테이너는 `common` 도커 네트워크에 연결
-5. **GHCR 로그인**: 배포 시 프라이빗 이미지가 존재할 경우를 대비하여 `GitHub Container Registry` 자격 증명(토큰) 캐싱
-6. **운영 환경 변수 저장**: `/etc/environment` 에 비밀번호, 도메인, DB 이름, GHCR 로그인 정보를 기록
-
-이 작업이 완료되면 인스턴스는 GitHub Action(`deploy.yml`) 배포 대상이 될 준비 상태가 됩니다.
+1. 이 인프라를 한 문장으로 요약하면
+2. `main.tf` 하나로 보는 전체 구조
+3. 네트워크 — VPC, Subnet, Internet Gateway
+4. 보안 — Security Group, IAM Role, Instance Profile
+5. EC2 — 단일 인스턴스와 태그 전략
+6. `user_data` — 서버가 처음 켜질 때 하는 일
+7. secrets.tf — 무엇을 직접 넣어야 하는가
+8. Terraform 실행 흐름
+9. 이 인프라에서 배울 수 있는 것
 
 ---
 
-## 🚀 사용법 (프로비저닝하기)
+# 1강. 이 인프라를 한 문장으로 요약하면
 
-이 저장소의 코드를 실제로 당신의 AWS 계정에 반영하려면 아래 순서를 따르세요.
+이 인프라는:
 
-### 1단계: 시크릿 설정 파일 준비
-`secrets.tf.default` 파일을 참고하여 실제 민감 데이터가 담길 `secrets.tf` 를 생성합니다.
-```bash
-cp secrets.tf.default secrets.tf
+> Terraform으로 AWS 네트워크와 단일 EC2를 만들고, 그 EC2가 첫 부팅 시 Docker 기반 NPMplus / Redis / PostgreSQL 환경을 스스로 준비하게 하는 구조다.
+
+조금 더 실무적으로 말하면:
+
+- 배포 단위는 단일 EC2 1대다.
+- AWS 자원 생성은 Terraform이 맡고
+- 애플리케이션 실행 기반 준비는 `user_data` 셸 스크립트가 맡는다.
+- EC2 안에서는 Docker 네트워크 `common` 위에 프록시, 캐시, DB를 컨테이너로 올린다.
+- 이후 애플리케이션 배포는 GitHub Actions + SSM이 담당한다.
+
+---
+
+# 2강. `main.tf` 하나로 보는 전체 구조
+
+핵심 리소스는 [`infra/main.tf`](C:/Users/jangk/IdeaProjects/slog_2026_03/infra/main.tf)에 거의 다 들어 있다.
+
+구조를 크게 나누면:
+
+```text
+AWS
+├── VPC 1개
+├── Public Subnet 4개
+├── Internet Gateway 1개
+├── Route Table 1개
+├── Security Group 1개
+├── IAM Role / Instance Profile 1세트
+└── EC2 1대
+     └── user_data 부트스트랩
+          ├── Docker 설치
+          ├── common 네트워크 생성
+          ├── npm_1
+          ├── redis_1
+          └── pg_1
 ```
-*`secrets.tf` 는 실제로 [infra/.gitignore](C:/Users/jangk/IdeaProjects/slog_2026_03/infra/.gitignore)에 포함되어 있으므로 원격 저장소에 올리지 않도록 주의하세요.*
 
-`secrets.tf` 에는 최소한 아래 값을 채워야 합니다.
+즉 Terraform은 “리소스 생성”까지만 하지 않고, **EC2가 실제 서비스 준비를 마칠 때까지의 초기 부트스트랩**도 함께 정의한다.
+
+---
+
+# 3강. 네트워크 — VPC, Subnet, Internet Gateway
+
+네트워크는 비교적 단순하다.
+
+```hcl
+resource "aws_vpc" "vpc_1" {
+  cidr_block = "10.0.0.0/16"
+}
+
+resource "aws_subnet" "subnet_1" {
+  cidr_block              = "10.0.0.0/24"
+  map_public_ip_on_launch = true
+}
+```
+
+읽는 포인트:
+
+- VPC는 `10.0.0.0/16`
+- 서브넷은 4개 (`10.0.0.0/24`, `10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`)
+- 전부 `map_public_ip_on_launch = true` 인 퍼블릭 서브넷
+- Route Table은 `0.0.0.0/0 -> Internet Gateway`
+
+즉 이 인프라는 private subnet / NAT gateway / multi-tier 분리까지 가진 구조는 아니다.  
+학습과 운영 단순화를 위해 **퍼블릭 서브넷 + 단일 진입 서버** 구조를 택했다.
+
+---
+
+# 4강. 보안 — Security Group, IAM Role, Instance Profile
+
+Security Group은 현재 단순하다.
+
+```hcl
+resource "aws_security_group" "sg_1" {
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+```
+
+이건 운영 편의성은 높지만 보안은 약하다. 문서로는 반드시 이렇게 읽어야 한다.
+
+- 지금은 학습/소규모 운영 중심 설정
+- 실무라면 포트 제한과 출처 제한을 더 강하게 걸어야 함
+
+IAM은 두 권한이 핵심이다.
+
+- `AmazonSSMManagedInstanceCore`
+  - GitHub Actions가 SSM으로 원격 명령을 내리기 위해 필요
+- `AmazonS3FullAccess`
+  - 현재 코드 기준으로 부여돼 있음
+
+즉 EC2에 SSH로 직접 붙는 대신, **SSM이 표준 원격 실행 경로**가 되도록 설계했다.
+
+---
+
+# 5강. EC2 — 단일 인스턴스와 태그 전략
+
+EC2는 1대만 만든다.
+
+```hcl
+resource "aws_instance" "ec2_1" {
+  ami                    = data.aws_ssm_parameter.amazon_linux_ami.value
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.subnet_2.id
+  vpc_security_group_ids = [aws_security_group.sg_1.id]
+
+  tags = {
+    Name = "${var.prefix}-ec2-1"
+  }
+}
+```
+
+핵심 포인트:
+
+- 인스턴스 타입: `t3.micro`
+- 배치 위치: `subnet_2`
+- Name 태그: `${prefix}-ec2-1`
+
+이 Name 태그가 중요하다.  
+GitHub Actions 배포 워크플로우는 이 태그로 배포 대상을 찾는다.
+
+즉 인프라와 배포 파이프라인이 **태그 명명 규칙**으로 연결된다.
+
+---
+
+# 6강. `user_data` — 서버가 처음 켜질 때 하는 일
+
+이 인프라의 진짜 핵심은 `locals.ec2_bootstrap` 이다.
+
+서버가 처음 켜지면 이 스크립트가 순서대로 실행된다.
+
+## 1. 기본 OS 준비
+
+- 타임존 `Asia/Seoul`
+- `dnf update`
+- `git`, `docker` 설치
+- Docker 서비스 enable + start
+
+## 2. Swap 설정
+
+```bash
+dd if=/dev/zero of=/swapfile bs=128M count=32
+mkswap /swapfile
+swapon /swapfile
+```
+
+`t3.micro` 메모리 제약을 완화하려는 의도다.
+
+## 3. 환경 변수 기록
+
+```bash
+echo 'PASSWORD_1=...' >> /etc/environment
+echo 'APP_1_DOMAIN=...' >> /etc/environment
+echo 'APP_1_DB_NAME=...' >> /etc/environment
+echo 'GITHUB_ACCESS_TOKEN_1_OWNER=...' >> /etc/environment
+echo 'GITHUB_ACCESS_TOKEN_1=...' >> /etc/environment
+```
+
+이 값들은 나중에:
+
+- NPMplus 로그인
+- 데이터베이스 이름
+- GHCR 로그인
+- GitHub Actions 배포 스크립트
+
+에 다시 쓰인다.
+
+## 4. Docker 네트워크와 필수 컨테이너
+
+```bash
+docker network create common
+```
+
+이후 세 컨테이너를 올린다.
+
+- `npm_1`
+  - NPMplus
+  - 80, 443, 81 포트 사용
+- `redis_1`
+  - Redis
+  - 비밀번호 보호
+- `pg_1`
+  - `jangka512/pgj:latest`
+  - PGroonga 포함 PostgreSQL 이미지
+
+즉 이 인프라는 RDS / ElastiCache를 쓰지 않고, **EC2 내부 Docker 컨테이너로 인프라 서비스를 같이 운영**하는 구조다.
+
+---
+
+# 7강. `secrets.tf` — 무엇을 직접 넣어야 하는가
+
+저장소에 있는 기본 파일은 [`infra/secrets.tf.default`](C:/Users/jangk/IdeaProjects/slog_2026_03/infra/secrets.tf.default)다.
+
+직접 만드는 파일은 `secrets.tf` 다.
+
+최소로 채워야 하는 값:
 
 - `password_1`
 - `app_1_db_name`
 - `github_access_token_1_owner`
 - `github_access_token_1`
 
-### 2단계: Terraform 실행
+예를 들어:
 
-테라폼 CLI 도구가 설치되어 있어야 하며, 로컬 장비에 AWS 인증 자격 증명(`aws configure`)이 세팅되어 있어야 합니다.
+```hcl
+variable "password_1" {
+  default = "realpassword1234"
+}
 
-```bash
-# 워크스페이스 초기화 및 관련 플러그인 로드
-terraform init
-
-# 어떤 리소스가 변경/생성 될지 미리보기 
-terraform plan
-
-# 인프라 변경 실제 적용 대상에 반영 
-terraform apply
+variable "github_access_token_1_owner" {
+  default = "NEED_TO_INPUT"
+}
 ```
 
-적용이 완료되면 콘솔창에서 생성된 리소스와 EC2 Public IP 등을 확인할 수 있습니다.
+주의:
+
+- `secrets.tf` 는 추적 대상이 아니다
+- `terraform.tfstate`, `terraform.tfstate.backup` 도 추적 대상이 아니다
+- [`infra/.gitignore`](C:/Users/jangk/IdeaProjects/slog_2026_03/infra/.gitignore)에서 실제로 막고 있다
 
 ---
 
-## 📂 파일 트리 가이드
+# 8강. Terraform 실행 흐름
 
-- `main.tf`: VPC, Subnet, SG, IAM, EC2, user_data 부트스트랩 정의.
-- `variables.tf`: 프로젝트 내에서 반복 재사용될 기본 변수 선언.
-- `secrets.tf`: 직접 생성하는 민감 변수 파일. `.gitignore` 대상입니다.
-- `terraform.tfstate` / `.backup`: 현재 인프라 구조를 기억하는 상태 저장 파일. 이것들도 `.gitignore` 대상입니다.
+실행 순서는 단순하다.
+
+```bash
+cd infra
+cp secrets.tf.default secrets.tf
+terraform init
+terraform plan
+terraform apply
+```
+
+각 단계 의미:
+
+- `init`
+  - provider 다운로드
+- `plan`
+  - 무엇이 만들어질지 미리보기
+- `apply`
+  - 실제 반영
+
+이 인프라는 apply 후 끝이 아니라, **EC2가 부팅되면서 user_data까지 모두 끝나야 실제 배포 준비가 완료**된다.
+
+즉 Terraform 성공 직후에도:
+
+- Docker 설치 완료 여부
+- `npm_1`, `redis_1`, `pg_1` 기동 여부
+- `/etc/environment` 기록 여부
+
+를 함께 봐야 한다.
+
+---
+
+# 9강. 이 인프라에서 배울 수 있는 것
+
+- Terraform으로 AWS 기본 리소스 조합하기
+- EC2 단일 서버 구조에서 운영 단순성 확보하기
+- `user_data`로 서버 초기 상태를 코드화하기
+- Docker 네트워크 위에 프록시/캐시/DB를 같이 올리는 구조
+- GitHub Actions + SSM과 연결되는 태그/환경변수 전략
+
+---
+
+## 결론
+
+이 인프라는 거대한 클라우드 아키텍처가 아니다. 대신 **단일 서버 기반 운영 단순성, 코드화된 부트스트랩, 배포 자동화 연결**에 초점을 둔 구조다.
+
+읽을 때는:
+
+1. Terraform이 무엇을 만드는가
+2. `user_data`가 무엇을 설치하는가
+3. GitHub Actions가 이 인프라를 어떻게 찾고 쓰는가
+
+이 세 가지를 먼저 보면 전체 구조가 빠르게 잡힌다.
